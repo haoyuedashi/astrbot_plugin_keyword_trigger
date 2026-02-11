@@ -26,8 +26,16 @@ class EventFactory:
         logger.error(f"无法获取平台实例: {platform_id}")
         return None
 
-    def create_event(self, unified_msg_origin: str, command: str, creator_id: str, creator_name: str = None) -> AstrMessageEvent:
-        """创建事件对象，根据平台类型自动选择正确的事件类"""
+    def create_event(self, unified_msg_origin: str, command: str, creator_id: str, creator_name: str = None, original_components: list = None) -> AstrMessageEvent:
+        """创建事件对象，根据平台类型自动选择正确的事件类
+        
+        Args:
+            unified_msg_origin: 统一消息来源
+            command: 命令文本
+            creator_id: 创建者ID
+            creator_name: 创建者名称
+            original_components: 原始消息中的非文本组件（如 At 组件）
+        """
 
         # 解析平台信息
         platform_id = "unknown"
@@ -57,8 +65,8 @@ class EventFactory:
         platform_type = self._get_platform_type_from_instance(platform_instance, unified_msg_origin)
         logger.debug(f"create_event: 获取到的平台类型={platform_type}")
 
-        # 创建基础消息对象
-        msg = self._create_message_object(command, session_id, message_type, creator_id, creator_name, platform_instance)
+        # 创建基础消息对象，传递原始组件
+        msg = self._create_message_object(command, session_id, message_type, creator_id, creator_name, platform_instance, original_components)
 
         # 创建平台元数据，使用真实的平台类型，但ID保持原始值
         meta = PlatformMetadata(platform_type, "command_trigger", platform_id)
@@ -124,8 +132,19 @@ class EventFactory:
         return "123456789"
 
     def _create_message_object(self, command: str, session_id: str, message_type: MessageType,
-                              creator_id: str, creator_name: str = None, platform_instance=None) -> AstrBotMessage:
-        """创建消息对象"""
+                              creator_id: str, creator_name: str = None, platform_instance=None,
+                              original_components: list = None) -> AstrBotMessage:
+        """创建消息对象
+        
+        Args:
+            command: 命令文本
+            session_id: 会话ID
+            message_type: 消息类型
+            creator_id: 创建者ID
+            creator_name: 创建者名称
+            platform_instance: 平台实例
+            original_components: 原始消息中的非文本组件（如 At 组件）
+        """
         msg = AstrBotMessage()
         msg.message_str = command
         msg.session_id = session_id
@@ -152,8 +171,12 @@ class EventFactory:
                 group_id = session_id
             msg.group_id = group_id
 
-        # 设置消息链
-        msg.message = [Plain(command)]
+        # 构建消息链：先放命令文本，再放原始非文本组件（如 At）
+        message_chain = [Plain(command)]
+        if original_components:
+            message_chain.extend(original_components)
+            logger.debug(f"消息链中添加了 {len(original_components)} 个原始组件")
+        msg.message = message_chain
 
         # 设置raw_message属性（模拟原始消息对象）
         msg.raw_message = {
@@ -392,34 +415,19 @@ class EventFactory:
         event.is_wake = True  # 标记为唤醒状态
         event.is_at_or_wake_command = True  # 标记为指令
 
-        # 尝试设置平台实例和相关属性
+        # 尝试设置平台实例引用（不再复制所有属性，避免类型冲突）
         try:
-            platform_instance = self._get_platform_instance(meta.id)  # 使用平台ID而不是平台类型
-            logger.info(f"_create_base_event: 尝试获取平台实例，platform_id={meta.id}")
+            platform_instance = self._get_platform_instance(meta.id)
+            logger.debug(f"_create_base_event: 尝试获取平台实例，platform_id={meta.id}")
             if platform_instance:
+                # 只设置平台实例引用，不复制属性
+                # 复制属性可能导致 Provider 等类型检查失败
                 event.platform_instance = platform_instance
-
-                # 复制平台实例的所有相关属性到事件对象
-                copied_attrs = []
-                for attr_name in dir(platform_instance):
-                    # 跳过私有属性和方法
-                    if not attr_name.startswith('_'):
-                        try:
-                            attr_value = getattr(platform_instance, attr_name)
-                            # 跳过方法，只复制属性
-                            if not callable(attr_value):
-                                setattr(event, attr_name, attr_value)
-                                copied_attrs.append(attr_name)
-                        except Exception as attr_e:
-                            logger.debug(f"跳过属性 {attr_name}: {attr_e}")
-                            continue
-
-                logger.info(f"为基础事件复制平台属性: {copied_attrs}, 平台ID: {meta.id}")
-                logger.info(f"为基础事件设置平台实例: {meta.id}")
+                logger.debug(f"为基础事件设置平台实例: {meta.id}")
             else:
                 logger.warning(f"无法为基础事件获取平台实例: {meta.id}")
         except Exception as e:
             logger.warning(f"设置基础事件平台实例失败: {e}")
 
-        logger.info("使用基础 AstrMessageEvent")
+        logger.debug("使用基础 AstrMessageEvent")
         return event

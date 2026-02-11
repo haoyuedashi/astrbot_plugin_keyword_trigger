@@ -71,6 +71,31 @@ class KeywordTriggerPlugin(Star):
             return str(event.message_obj.message_id) if event.message_obj.message_id else ""
         return ""
 
+    def _extract_non_text_components(self, event: AstrMessageEvent) -> list:
+        """
+        从原始消息中提取非文本组件（如 At 组件）
+        这确保了真正的 @ 提及不会丢失
+        """
+        from astrbot.api.message_components import Plain, At
+        
+        non_text_components = []
+        
+        try:
+            if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'message'):
+                message_chain = event.message_obj.message
+                if message_chain:
+                    for comp in message_chain:
+                        # 保留 At 组件（真正的艾特）
+                        if isinstance(comp, At):
+                            non_text_components.append(comp)
+                            logger.debug(f"[关键词触发] 提取到 At 组件: qq={comp.qq}")
+                        # 可以根据需要添加其他类型的组件
+                        # 例如: Image, Face 等
+        except Exception as e:
+            logger.warning(f"[关键词触发] 提取消息组件时出错: {e}")
+        
+        return non_text_components
+
     @filter.event_message_type(filter.EventMessageType.ALL)  
     async def on_message(self, event: AstrMessageEvent):
         """监听所有消息，匹配关键词后派发新的命令事件"""
@@ -127,23 +152,38 @@ class KeywordTriggerPlugin(Star):
             if not group_id:
                 return
         
-        # 检查是否匹配关键词（完全匹配）
-        if text in self.keywords:
-            new_command = f"/{text}"
+        # 检查是否匹配关键词（前缀匹配，支持关键词后带参数）
+        matched_keyword = None
+        for keyword in self.keywords:
+            if text == keyword or text.startswith(keyword):
+                # 优先选择更长的关键词匹配（避免短词误匹配）
+                if matched_keyword is None or len(keyword) > len(matched_keyword):
+                    matched_keyword = keyword
+        
+        if matched_keyword:
+            # 获取关键词后面的内容（参数部分）
+            suffix = text[len(matched_keyword):]
+            new_command = f"/{matched_keyword}{suffix}"
             
-            logger.info(f"[关键词触发] 匹配关键词 '{text}' → 转换为 '{new_command}'")
+            # 提取原始消息中的非文本组件（如 At 组件）
+            original_components = self._extract_non_text_components(event)
+            
+            logger.info(f"[关键词触发] 匹配关键词 '{matched_keyword}' → 转换为 '{new_command}'")
+            if original_components:
+                logger.info(f"[关键词触发] 保留 {len(original_components)} 个非文本组件")
             
             try:
                 # 获取发送者信息
                 sender_id = str(event.get_sender_id())
                 sender_name = event.get_sender_name() if hasattr(event, 'get_sender_name') else "用户"
                 
-                # 使用 EventFactory 创建新的命令事件
+                # 使用 EventFactory 创建新的命令事件，传递原始消息组件
                 new_event = self.event_factory.create_event(
                     unified_msg_origin=event.unified_msg_origin,
                     command=new_command,
                     creator_id=sender_id,
-                    creator_name=sender_name
+                    creator_name=sender_name,
+                    original_components=original_components
                 )
                 
                 # 将新事件放入事件队列
@@ -156,3 +196,4 @@ class KeywordTriggerPlugin(Star):
                 
             except Exception as e:
                 logger.error(f"[关键词触发] 派发事件失败: {e}")
+
