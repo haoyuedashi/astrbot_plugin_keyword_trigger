@@ -5,7 +5,7 @@
 
 功能说明：
 1. 监听群聊所有消息
-2. 当消息完全匹配配置的关键词时，自动添加指令前缀
+2. 当消息匹配配置的关键词时，自动添加指令前缀
 3. 创建新事件派发到 AstrBot 的事件队列，让其他插件能够处理
 
 使用示例：
@@ -13,18 +13,15 @@
 - 用户发送 "宝宝菜单" → 创建 "/宝宝菜单" 命令事件 → 触发对应插件
 """
 
-import contextvars
 from astrbot.api import logger
 from astrbot.api.star import Star, Context, register
 from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.message_components import Plain, At
 
 from .core.event_factory import EventFactory
 
-# 防止无限递归的标记
-_is_triggered_event = contextvars.ContextVar("is_triggered_event", default=False)
 
-
-@register("keyword_trigger", "haoyue", "免指令前缀关键词触发插件", "1.0.0")
+@register("keyword_trigger", "haoyuedashi", "免指令前缀关键词触发插件", "1.0.0")
 class KeywordTriggerPlugin(Star):
     """关键词触发插件 - 让用户无需输入前缀即可触发指令"""
 
@@ -71,13 +68,28 @@ class KeywordTriggerPlugin(Star):
             return str(event.message_obj.message_id) if event.message_obj.message_id else ""
         return ""
 
+    def _get_plain_text(self, event: AstrMessageEvent) -> str:
+        """从消息中提取纯文本内容
+        
+        优先从消息组件链中提取 Plain 文本，回退到 message_str。
+        """
+        try:
+            if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'message'):
+                message_chain = event.message_obj.message
+                if message_chain:
+                    for comp in message_chain:
+                        if isinstance(comp, Plain) and hasattr(comp, 'text'):
+                            return comp.text.strip()
+        except (AttributeError, TypeError):
+            pass
+        
+        return event.message_str.strip() if event.message_str else ""
+
     def _extract_non_text_components(self, event: AstrMessageEvent) -> list:
         """
         从原始消息中提取非文本组件（如 At 组件）
         这确保了真正的 @ 提及不会丢失
         """
-        from astrbot.api.message_components import Plain, At
-        
         non_text_components = []
         
         try:
@@ -89,9 +101,7 @@ class KeywordTriggerPlugin(Star):
                         if isinstance(comp, At):
                             non_text_components.append(comp)
                             logger.debug(f"[关键词触发] 提取到 At 组件: qq={comp.qq}")
-                        # 可以根据需要添加其他类型的组件
-                        # 例如: Image, Face 等
-        except Exception as e:
+        except (AttributeError, TypeError) as e:
             logger.warning(f"[关键词触发] 提取消息组件时出错: {e}")
         
         return non_text_components
@@ -105,45 +115,14 @@ class KeywordTriggerPlugin(Star):
             logger.debug(f"[关键词触发] 跳过已触发的事件: {message_id}")
             return
         
-        # 获取消息文本
-        text = event.message_str.strip() if event.message_str else ""
+        # 提取纯文本内容
+        text = self._get_plain_text(event)
         if not text:
             return
         
-        # 获取原始消息（用于检查是否带前缀）
-        raw_text = text
-        if hasattr(event, 'message_obj'):
-            msg_obj = event.message_obj
-            # 尝试从 raw_message 获取原始文本
-            if hasattr(msg_obj, 'raw_message'):
-                if isinstance(msg_obj.raw_message, str):
-                    raw_text = msg_obj.raw_message.strip()
-                elif isinstance(msg_obj.raw_message, dict):
-                    msg_content = msg_obj.raw_message.get('message', text)
-                    # message 可能是 str 或 list
-                    if isinstance(msg_content, str):
-                        raw_text = msg_content.strip()
-                    elif isinstance(msg_content, list) and msg_content:
-                        # 尝试从 list 中提取文本
-                        for item in msg_content:
-                            if isinstance(item, dict) and item.get('type') == 'text':
-                                raw_text = item.get('data', {}).get('text', text).strip()
-                                break
-                            elif isinstance(item, str):
-                                raw_text = item.strip()
-                                break
-            # 也尝试从 message 组件获取
-            if hasattr(msg_obj, 'message') and msg_obj.message:
-                from astrbot.api.message_components import Plain
-                for comp in msg_obj.message:
-                    if isinstance(comp, Plain) and hasattr(comp, 'text'):
-                        raw_text = comp.text.strip()
-                        break
-        
-        # 检查原始消息或当前消息是否已经是命令格式，跳过处理
-        if (raw_text.startswith("/") or raw_text.startswith("#") or 
-            text.startswith("/") or text.startswith("#")):
-            logger.debug(f"[关键词触发] 跳过命令格式消息: raw='{raw_text}', text='{text}'")
+        # 跳过已经带命令前缀的消息
+        if text.startswith("/") or text.startswith("#"):
+            logger.debug(f"[关键词触发] 跳过命令格式消息: '{text}'")
             return
         
         # 检查是否仅限群聊
@@ -168,6 +147,13 @@ class KeywordTriggerPlugin(Star):
             # 提取原始消息中的非文本组件（如 At 组件）
             original_components = self._extract_non_text_components(event)
             
+            # 获取原始事件的管理员状态
+            is_admin = False
+            try:
+                is_admin = event.is_admin()
+            except (AttributeError, TypeError):
+                pass
+            
             logger.info(f"[关键词触发] 匹配关键词 '{matched_keyword}' → 转换为 '{new_command}'")
             if original_components:
                 logger.info(f"[关键词触发] 保留 {len(original_components)} 个非文本组件")
@@ -177,13 +163,14 @@ class KeywordTriggerPlugin(Star):
                 sender_id = str(event.get_sender_id())
                 sender_name = event.get_sender_name() if hasattr(event, 'get_sender_name') else "用户"
                 
-                # 使用 EventFactory 创建新的命令事件，传递原始消息组件
+                # 使用 EventFactory 创建新的命令事件，传递原始消息组件和管理员状态
                 new_event = self.event_factory.create_event(
                     unified_msg_origin=event.unified_msg_origin,
                     command=new_command,
                     creator_id=sender_id,
                     creator_name=sender_name,
-                    original_components=original_components
+                    original_components=original_components,
+                    is_admin=is_admin
                 )
                 
                 # 将新事件放入事件队列
@@ -196,4 +183,3 @@ class KeywordTriggerPlugin(Star):
                 
             except Exception as e:
                 logger.error(f"[关键词触发] 派发事件失败: {e}")
-
