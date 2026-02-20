@@ -86,10 +86,9 @@ class KeywordTriggerPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL)  
     async def on_message(self, event: AstrMessageEvent):
         """监听所有消息，匹配关键词后派发新的命令事件"""
-        # 检查是否是我们自己触发的事件（通过 message_id 前缀判断）
-        message_id = event.message_obj.message_id
-        if message_id and message_id.startswith("command_trigger_"):
-            logger.debug(f"[关键词触发] 跳过已触发的事件: {message_id}")
+        # 检查事件是否已经是指令（避免重复触发）
+        if hasattr(event, 'is_at_or_wake_command') and event.is_at_or_wake_command:
+            logger.debug(f"[关键词触发] 跳过已识别为指令的事件: {event.message_str}")
             return
         
         # 提取纯文本内容
