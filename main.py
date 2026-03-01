@@ -1,18 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-关键词触发插件 - 免指令前缀触发其他插件功能
-
-功能说明：
-1. 监听群聊所有消息
-2. 当消息匹配配置的关键词时，自动添加指令前缀
-3. 创建新事件派发到 AstrBot 的事件队列，让其他插件能够处理
-
-使用示例：
-- 用户发送 "打工" → 创建 "/打工" 命令事件 → 触发打工指令
-- 用户发送 "宝宝菜单" → 创建 "/宝宝菜单" 命令事件 → 触发对应插件
-"""
-
 from astrbot.api import logger
 from astrbot.api.star import Star, Context, register
 from astrbot.api.event import filter, AstrMessageEvent
@@ -56,35 +41,6 @@ class KeywordTriggerPlugin(Star):
                     
         return result
 
-    def _get_group_id(self, event: AstrMessageEvent) -> str:
-        """获取群组ID"""
-        if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'group_id'):
-            return str(event.message_obj.group_id) if event.message_obj.group_id else ""
-        return ""
-
-    def _get_message_id(self, event: AstrMessageEvent) -> str:
-        """获取消息ID"""
-        if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'message_id'):
-            return str(event.message_obj.message_id) if event.message_obj.message_id else ""
-        return ""
-
-    def _get_plain_text(self, event: AstrMessageEvent) -> str:
-        """从消息中提取纯文本内容
-        
-        优先从消息组件链中提取 Plain 文本，回退到 message_str。
-        """
-        try:
-            if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'message'):
-                message_chain = event.message_obj.message
-                if message_chain:
-                    for comp in message_chain:
-                        if isinstance(comp, Plain) and hasattr(comp, 'text'):
-                            return comp.text.strip()
-        except (AttributeError, TypeError):
-            pass
-        
-        return event.message_str.strip() if event.message_str else ""
-
     def _extract_non_text_components(self, event: AstrMessageEvent) -> list:
         """
         从原始消息中提取非文本组件（如 At 组件）
@@ -106,17 +62,37 @@ class KeywordTriggerPlugin(Star):
         
         return non_text_components
 
+    def _is_valid_match(self, text: str, keyword: str) -> bool:
+        """检查匹配是否有效（严格空格分隔）
+        规则：
+        1. 必须以关键词开头
+        2. 如果 text 长度等于 keyword 长度，则是完全匹配，有效
+        3. 如果 text 长度大于 keyword 长度，则 keyword 后的第一个字符必须是空格
+        """
+        if not text.startswith(keyword):
+            return False
+            
+        # 完全匹配
+        if len(text) == len(keyword):
+            return True
+            
+        # 严格检查：关键词后面必须跟空格
+        next_char = text[len(keyword)]
+        if next_char != " ":
+            return False
+                
+        return True
+
     @filter.event_message_type(filter.EventMessageType.ALL)  
     async def on_message(self, event: AstrMessageEvent):
         """监听所有消息，匹配关键词后派发新的命令事件"""
-        # 检查是否是我们自己触发的事件（通过 message_id 前缀判断）
-        message_id = self._get_message_id(event)
-        if message_id.startswith("command_trigger_"):
-            logger.debug(f"[关键词触发] 跳过已触发的事件: {message_id}")
+        # 检查事件是否已经是指令（避免重复触发）
+        if hasattr(event, 'is_at_or_wake_command') and event.is_at_or_wake_command:
+            logger.debug(f"[关键词触发] 跳过已识别为指令的事件: {event.message_str}")
             return
         
         # 提取纯文本内容
-        text = self._get_plain_text(event)
+        text = event.message_str.strip() if event.message_str else ""
         if not text:
             return
         
@@ -127,14 +103,13 @@ class KeywordTriggerPlugin(Star):
         
         # 检查是否仅限群聊
         if self.group_only:
-            group_id = self._get_group_id(event)
-            if not group_id:
+            if not event.message_obj.group_id:
                 return
         
         # 检查是否匹配关键词（前缀匹配，支持关键词后带参数）
         matched_keyword = None
         for keyword in self.keywords:
-            if text == keyword or text.startswith(keyword):
+            if self._is_valid_match(text, keyword):
                 # 优先选择更长的关键词匹配（避免短词误匹配）
                 if matched_keyword is None or len(keyword) > len(matched_keyword):
                     matched_keyword = keyword

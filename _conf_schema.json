@@ -1,6 +1,7 @@
 {
     "keywords": {
-        "description": "关键词触发列表（输入后自动添加 / 前缀触发对应指令）",
+        "description": "关键词触发列表",
+        "hint": "输入后自动添加 / 前缀触发对应指令",
         "type": "list",
         "default": [
             "打工",
@@ -11,7 +12,8 @@
         }
     },
     "enable_group_only": {
-        "description": "是否仅在群聊中触发（私聊不触发）",
+        "description": "仅群聊触发",
+        "hint": "私聊不触发",
         "type": "bool",
         "default": true
     }
